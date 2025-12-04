@@ -1,0 +1,4 @@
+metal,route,stage,CO2_per_kg
+aluminium,primary_global,mining,2.0
+aluminium,primary_global,extraction,4.0
+aluminium,primary_global,manufacturing,2.0
