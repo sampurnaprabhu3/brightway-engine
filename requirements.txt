@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+brightway2
+bw2data
+bw2calc
+pandas
+numpy
+python-multipart
+requests
