@@ -1,216 +1,165 @@
 # api_service.py
-"""
-API service for Metal LCA engine (FastAPI).
-- POST /aluminium/run accepts AluminiumRequest and returns AluminiumResponse JSON
-- Uses aluminium_calculators.calculate_mining for mining-stage calculations
-- Attempts to connect to Brightway (optional); failure to connect is tolerated.
-"""
-
-from typing import Dict, Optional, Any
+from typing import Dict, Any, Optional
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-import logging
-import os
+from fastapi.responses import JSONResponse
 
-# Try to import Brightway (optional). If Brightway not configured, we continue.
-try:
-    import brightway2 as bw  # noqa: F401
-    BRIGHTWAY_AVAILABLE = True
-except Exception:
-    BRIGHTWAY_AVAILABLE = False
+# import the calculator functions that exist in your file
+from aluminium_calculators import (
+    compute_combined_lca,
+    compute_mining,
+    compute_extraction,
+    compute_manufacturing,
+)
 
-# Import the mining calculator (expects aluminium_calculators.py near this file)
-try:
-    from aluminium_calculators import calculate_mining
-except Exception as e:
-    # If missing, raise a clear error later when called.
-    calculate_mining = None
-    logging.warning(
-        "aluminium_calculators.calculate_mining not available: %s", e)
+app = FastAPI(title="Metal LCA Engine", version="0.2.1")
 
-app = FastAPI(title="Metal LCA Engine", version="0.1.0")
 
-# ---------------------------
-# Pydantic models
-# ---------------------------
+# -------------------------
+# Pydantic input models
+# -------------------------
+class MiningInputs(BaseModel):
+    ore_input_kg: Optional[float] = None
+    ore_grade_percent: Optional[float] = None
+    process_recovery: Optional[float] = None
+    electricity_kWh: Optional[float] = None
+    fuel_diesel_L: Optional[float] = None
+    # add other mining-specific fields as needed
+
+
+class ExtractionInputs(BaseModel):
+    ore_input_kg: Optional[float] = None
+    fraction_alumina: Optional[float] = None
+    reduction_efficiency: Optional[float] = None
+    electricity_kWh: Optional[float] = None
+    fuel_coal_kg: Optional[float] = None
+    # add other extraction-specific fields as needed
+
+
+class ManufacturingInputs(BaseModel):
+    metal_input_kg: Optional[float] = None
+    process_yield: Optional[float] = None
+    electricity_kWh: Optional[float] = None
+    fuel_naturalGas_MJ: Optional[float] = None
+    # add other manufacturing-specific fields as needed
+
+
+class StageInputs(BaseModel):
+    mining: Optional[MiningInputs] = None
+    extraction: Optional[ExtractionInputs] = None
+    manufacturing: Optional[ManufacturingInputs] = None
+    # any unknown extra keys sent by frontend will be ignored by these models
 
 
 class AluminiumRequest(BaseModel):
     projectId: str
     scenarioId: str
-    metal: str                      # e.g. "aluminium"
-    route: str                      # e.g. "primary_global"
-    stage: str                      # "mining" | "extraction" | "manufacturing" | "full_chain"
-    functionalUnit_kg: float = 1.0  # mass in kg
-    recycling_rate: float = 0.0     # between 0 and 1
-    primary_cost_per_kg: float = 0.0
-    recycled_cost_per_kg: float = 0.0
-    # optional stage-specific numeric inputs
-    inputs: Optional[Dict[str, Any]] = None
+    metal: str
+    route: Optional[str] = None
+    stage: Optional[str] = None
+    functionalUnit_kg: Optional[float] = 1.0
+    recycling_rate: Optional[float] = 0.0
+    primary_cost_per_kg: Optional[float] = None
+    recycled_cost_per_kg: Optional[float] = None
+    inputs: Optional[StageInputs] = None
 
 
-class AluminiumResponse(BaseModel):
-    metadata: Dict[str, Any]
-    functionalUnit_kg: float
-    gwp_kgCO2e: float
-    stages: Dict[str, Any]
-    costs: Dict[str, Any]
-
-
-# ---------------------------
-# Helper functions
-# ---------------------------
-
-def try_connect_brightway():
-    """
-    Optional: attempt a Brightway connection (safe — doesn't fail the API).
-    Caller should check BRIGHTWAY_AVAILABLE before using bw features.
-    """
-    if not BRIGHTWAY_AVAILABLE:
-        return {"available": False, "message": "brightway2 not installed/configured"}
+# -------------------------
+# Helpers
+# -------------------------
+def _dict_from_model(m):
+    """Safe convert pydantic model or dict to plain dict"""
+    if m is None:
+        return {}
+    if isinstance(m, dict):
+        return m
     try:
-        # If the user has BRIGHTWAY2_DIR env var set, Brightway will use it.
-        dbs = bw.databases
-        # return a brief listing
-        return {"available": True, "databases": list(dbs)}
-    except Exception as exc:
-        return {"available": False, "message": str(exc)}
+        return m.dict()
+    except Exception:
+        return dict(m)
 
 
-def build_basic_response(projectId: str, scenarioId: str, req: AluminiumRequest):
+# -------------------------
+# Endpoints
+# -------------------------
+@app.post("/aluminium/run")
+async def run_aluminium(req: AluminiumRequest):
     """
-    Basic response template with metadata fields.
+    Main endpoint. Accepts:
+      - combined payload with `inputs: { mining: {...}, extraction: {...}, manufacturing: {...} }`
+      - OR single-stage payload where req.stage is 'mining'|'extraction'|'manufacturing' (and inputs.<stage> is supplied)
+    Returns breakdown + totals (JSON).
     """
-    meta = {
-        "engine": "brightway" if BRIGHTWAY_AVAILABLE else "local",
-        "projectId": projectId,
-        "scenarioId": scenarioId,
-        "metal": req.metal,
-        "route": req.route,
-        "stage": req.stage,
-        "functionalUnit_kg": req.functionalUnit_kg,
-    }
-    if BRIGHTWAY_AVAILABLE:
-        bw_info = try_connect_brightway()
-        meta["brightway"] = bw_info
-    return meta
+    payload = req.dict()
+    inputs_model = req.inputs
+    inputs = _dict_from_model(inputs_model)
 
-
-# ---------------------------
-# FastAPI endpoints
-# ---------------------------
-
-@app.get("/", tags=["health"])
-def root():
-    """Simple root health-check endpoint."""
-    return {"message": "Metal LCA engine running", "version": app.version}
-
-
-@app.post("/aluminium/run", response_model=AluminiumResponse, tags=["aluminium"])
-def run_aluminium(req: AluminiumRequest):
-    """
-    Run Aluminium LCA scenario.
-    - expects optional `inputs` dict inside request containing numeric inputs for the stage.
-    - currently supports 'mining' stage; 'full_chain' runs mining for quick testing (extendable).
-    """
-    # Validate: ensure our mining calculator exists
-    if calculate_mining is None:
-        raise HTTPException(
-            status_code=500, detail="Mining calculator module not found on server.")
-
-    # Prepare response metadata
-    metadata = build_basic_response(req.projectId, req.scenarioId, req)
-
-    # Extract the stage-specific inputs (optional)
-    request_inputs = req.inputs or {}
-
-    # Stage handling
-    try:
-        if req.stage == "mining":
-            # Run mining calculator
-            mining_result = calculate_mining(request_inputs)
-            gwp_kgCO2e = mining_result.get(
-                "emissions_air", {}).get("co2_kg", 0.0)
-
-            costs = compute_costs_basic(req)  # basic cost placeholder
-
-            resp = {
-                "metadata": metadata,
-                "functionalUnit_kg": req.functionalUnit_kg,
-                "gwp_kgCO2e": gwp_kgCO2e,
-                "stages": {"mining": mining_result},
-                "costs": costs,
+    # If front-end sent combined inputs object, prefer compute_combined_lca
+    if inputs and (
+        ("mining" in inputs and inputs["mining"])
+        or ("extraction" in inputs and inputs["extraction"])
+        or ("manufacturing" in inputs and inputs["manufacturing"])
+    ):
+        # Use compute_combined_lca which already does per-stage computations + totals
+        try:
+            # convert nested pydantic models to normal dicts (if present)
+            combined_payload = {
+                **payload,
+                "inputs": {
+                    "mining": _dict_from_model(inputs.get("mining")),
+                    "extraction": _dict_from_model(inputs.get("extraction")),
+                    "manufacturing": _dict_from_model(inputs.get("manufacturing")),
+                },
             }
-            return resp
-
-        elif req.stage == "full_chain":
-            # For now run mining only (fast smoke-test). We'll extend extraction + manufacturing next.
-            mining_result = calculate_mining(request_inputs)
-            gwp_kgCO2e = mining_result.get(
-                "emissions_air", {}).get("co2_kg", 0.0)
-
-            costs = compute_costs_basic(req)
-
-            resp = {
-                "metadata": metadata,
-                "functionalUnit_kg": req.functionalUnit_kg,
-                "gwp_kgCO2e": gwp_kgCO2e,
-                "stages": {"mining": mining_result},
-                "costs": costs,
-            }
-            return resp
-
-        elif req.stage in ("extraction", "manufacturing"):
-            # Placeholder — we haven't implemented these calculators yet
+            result = compute_combined_lca(combined_payload)
+            return JSONResponse(status_code=200, content=result)
+        except Exception as e:
             raise HTTPException(
-                status_code=501, detail=f"Stage '{req.stage}' not yet implemented on server.")
+                status_code=500, detail=f"Server error during combined LCA: {e}")
 
+    # Otherwise, support single-stage operations via req.stage
+    stage = (req.stage or "").lower()
+    single_inputs = {}
+    if inputs:
+        # If a single stage payload used, inputs likely contains that key
+        if stage:
+            single_inputs = inputs.get(stage, {})
+        else:
+            # try to infer stage if only one present
+            present = [k for k, v in inputs.items() if v]
+            if len(present) == 1:
+                stage = present[0]
+                single_inputs = inputs.get(stage, {})
+            else:
+                raise HTTPException(
+                    status_code=400, detail="No combined inputs found and stage not specified or ambiguous.")
+
+    if not stage:
+        raise HTTPException(
+            status_code=400, detail="stage is required when not sending combined inputs (mining/extraction/manufacturing)")
+
+    # route the single stage to the right calculator
+    try:
+        if stage == "mining":
+            res = compute_mining(single_inputs or {})
+            return JSONResponse(status_code=200, content={"stage": "mining", "result": res})
+        elif stage == "extraction":
+            res = compute_extraction(single_inputs or {})
+            return JSONResponse(status_code=200, content={"stage": "extraction", "result": res})
+        elif stage == "manufacturing":
+            res = compute_manufacturing(single_inputs or {})
+            return JSONResponse(status_code=200, content={"stage": "manufacturing", "result": res})
         else:
             raise HTTPException(
-                status_code=400, detail=f"Unknown stage '{req.stage}'")
-
+                status_code=400, detail=f"Unknown stage '{stage}'. Allowed: mining, extraction, manufacturing")
     except HTTPException:
-        # re-raise FastAPI HTTPExceptions
         raise
-    except Exception as exc:
-        logging.exception("Error while running stage")
-        raise HTTPException(status_code=500, detail=str(exc))
-
-
-# ---------------------------
-# Simple cost function (placeholder)
-# ---------------------------
-
-def compute_costs_basic(req: AluminiumRequest) -> Dict[str, float]:
-    """
-    Compute a simple cost breakdown using the provided cost per kg values and recycling_rate.
-    - primary_cost_per_kg and recycled_cost_per_kg must be provided in request, else 0.
-    - returns dict with primary/recycled/total cost components (per functional unit).
-    """
-    try:
-        primary_cost = float(req.primary_cost_per_kg or 0.0)
-        recycled_cost = float(req.recycled_cost_per_kg or 0.0)
-        r = float(req.recycling_rate or 0.0)
-        # blended cost per kg: (1 - r) * primary + r * recycled
-        blended_per_kg = (1.0 - r) * primary_cost + r * recycled_cost
-        total_cost = blended_per_kg * float(req.functionalUnit_kg or 1.0)
-        return {
-            "primary_material_fraction": 1.0 - r,
-            "recycled_material_fraction": r,
-            "primary_cost_component": (1.0 - r) * primary_cost * req.functionalUnit_kg,
-            "recycled_cost_component": r * recycled_cost * req.functionalUnit_kg,
-            "total_cost": total_cost,
-            "blended_cost_per_kg": blended_per_kg,
-        }
     except Exception as e:
-        logging.exception("Error computing costs")
-        return {"error": str(e)}
+        raise HTTPException(
+            status_code=500, detail=f"Server error computing stage '{stage}': {e}")
 
 
-# ---------------------------
-# Run app (optional guard for direct run)
-# ---------------------------
-if __name__ == "__main__":
-    import uvicorn
-    # When run directly: uvicorn api_service:app --reload
-    uvicorn.run("api_service:app", host="127.0.0.1", port=8000, reload=True)
+# quick root check
+@app.get("/")
+async def root():
+    return {"message": "Metal LCA engine running", "version": app.version}

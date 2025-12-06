@@ -1,160 +1,255 @@
 # aluminium_calculators.py
-"""
-Stage calculators for Aluminium LCA.
-Currently: mining stage (follows formulas you provided).
-Returns stage results as dicts suitable for JSON response.
-"""
-
-from typing import Dict
-from decimal import Decimal
-
+from typing import Dict, Any
 from aluminium_constants import (
-    KWH_TO_MJ,
-    DIESEL_MJ_PER_L,
-    HFO_MJ_PER_L,
-    COAL_MJ_PER_KG,
-    CO2_PER_L_DIESEL,
-    CO2_PER_L_HFO,
-    CO2_PER_MJ_NATGAS,
-    CO2_PER_KG_COAL,
-    CH4_PER_L_DIESEL,
-    N2O_PER_L_DIESEL,
-    NOX_FACTOR_DIESEL,
-    PM_FACTOR_DIESEL,
-    VOC_FACTOR_AUX,
-    LEACHING_FACTOR,
-    RUNOFF_FRACTION,
-    FLUORIDE_CONC_DEFAULT,
-    SO2_SULFUR_CONVERSION,
+    KWH_TO_MJ, L_DIESEL_MJ, L_HEAVYOIL_MJ, KG_COAL_MJ,
+    GRID_CO2_KG_PER_KWH, DIESEL_CO2_KG_PER_L, HEAVYOIL_CO2_KG_PER_L,
+    NG_CO2_KG_PER_MJ, COAL_CO2_KG_PER_KG, ANODE_CARBON_CO2_KG_PER_KG,
+    DIESEL_CH4_KG_PER_L, DIESEL_N2O_KG_PER_L,
+    PM_PER_DIESEL_L, NOX_PER_GAS_MJ, PM_PER_COAL_KG,
+    WATER_SCARCITY_FACTOR
 )
 
 
-def safe_get(d: dict, key: str, default=0.0):
-    v = d.get(key, default)
-    try:
-        return float(v)
-    except Exception:
-        return default
+def _sum_energy_mj_from_inputs(inputs: Dict[str, Any]) -> float:
+    """Sum energy from common fields if present (returns MJ)."""
+    total = 0.0
+    if "electricity_kWh" in inputs:
+        total += float(inputs.get("electricity_kWh", 0.0)) * KWH_TO_MJ
+    if "fuel_diesel_L" in inputs:
+        total += float(inputs.get("fuel_diesel_L", 0.0)) * L_DIESEL_MJ
+    if "fuel_heavyOil_L" in inputs:
+        total += float(inputs.get("fuel_heavyOil_L", 0.0)) * L_HEAVYOIL_MJ
+    if "fuel_coal_kg" in inputs:
+        total += float(inputs.get("fuel_coal_kg", 0.0)) * KG_COAL_MJ
+    if "fuel_naturalGas_MJ" in inputs:
+        total += float(inputs.get("fuel_naturalGas_MJ", 0.0))
+    return total
 
 
-def calculate_mining(inputs: Dict) -> Dict:
-    """
-    inputs: dict with expected keys (any missing key uses a default):
-      - ore_input_kg
-      - ore_grade_percent
-      - process_recovery (0..1)
-      - auxiliary_materials_kg
-      - electricity_kWh
-      - fuel_diesel_L
-      - fuel_heavyOil_L
-      - fuel_naturalGas_MJ
-      - freshwater_m3, process_water_m3, water_returned_m3
-      - land_area_m2
-      - co_product_outputs_total_kg
-      - hazardous_fraction
-      - sulfur_content (for coal/if applicable)
-      - coal_kg
-      - impurity_factor
-    Returns dict with stage outputs and emissions.
-    """
-    # --- inputs (with defaults)
-    ore_input_kg = safe_get(inputs, "ore_input_kg", 1000.0)
-    ore_grade_percent = safe_get(inputs, "ore_grade_percent", 1.5)
-    process_recovery = safe_get(inputs, "process_recovery", 0.9)
-    auxiliary_materials_kg = safe_get(inputs, "auxiliary_materials_kg", 0.0)
+def compute_mining(inputs: Dict[str, Any]) -> Dict[str, Any]:
+    # inputs expected: ore_input_kg, ore_grade_percent, process_recovery, electricity_kWh, fuel_diesel_L, freshwater_m3, process_water_m3, water_returned_m3 (optional)
+    ore_input_kg = float(inputs.get("ore_input_kg", 0.0))
+    ore_grade_percent = float(inputs.get("ore_grade_percent", 0.0))
+    process_recovery = float(inputs.get("process_recovery", 1.0))
+    aux_materials_kg = float(inputs.get("auxiliary_materials_kg", 0.0))
+    # yield metal in tonnes
+    yield_metal_t = (ore_input_kg * (ore_grade_percent / 100.0)
+                     * process_recovery) / 1000.0
 
-    electricity_kWh = safe_get(inputs, "electricity_kWh", 0.0)
-    fuel_diesel_L = safe_get(inputs, "fuel_diesel_L", 0.0)
-    fuel_heavyOil_L = safe_get(inputs, "fuel_heavyOil_L", 0.0)
-    fuel_naturalGas_MJ = safe_get(inputs, "fuel_naturalGas_MJ", 0.0)
-    coal_kg = safe_get(inputs, "coal_kg", 0.0)
-    sulfur_content = safe_get(inputs, "sulfur_content", 0.01)  # fraction
+    total_material_input_kg = ore_input_kg + aux_materials_kg
+    energy_mj = _sum_energy_mj_from_inputs(inputs)
 
-    freshwater_m3 = safe_get(inputs, "freshwater_m3", 0.0)
-    process_water_m3 = safe_get(inputs, "process_water_m3", 0.0)
-    water_returned_m3 = safe_get(inputs, "water_returned_m3", 0.0)
-    land_area_m2 = safe_get(inputs, "land_area_m2", 0.0)
-    co_product_outputs_total_kg = safe_get(
-        inputs, "co_product_outputs_total_kg", 0.0)
-    hazardous_fraction = safe_get(inputs, "hazardous_fraction", 0.0)
-    impurity_factor = safe_get(inputs, "impurity_factor", 0.0)
-    product_mass_kg = safe_get(inputs, "product_mass_kg", 1.0)
-
-    # --- computed quantities (formula mapping)
-    yield_metal_t = ore_input_kg * \
-        (ore_grade_percent / 100.0) * process_recovery / 1000.0
-    # yield_metal_t is in tonnes (since ore_input_kg /1000)
-    total_material_input_kg = ore_input_kg + auxiliary_materials_kg
-
-    # Energy total (MJ)
-    energy_total_MJ = (
-        electricity_kWh * KWH_TO_MJ
-        + fuel_diesel_L * DIESEL_MJ_PER_L
-        + fuel_heavyOil_L * HFO_MJ_PER_L
-        + fuel_naturalGas_MJ
-        + coal_kg * COAL_MJ_PER_KG
-    )
-
+    # water
+    freshwater_m3 = float(inputs.get("freshwater_m3", 0.0))
+    process_water_m3 = float(inputs.get("process_water_m3", 0.0))
+    water_returned_m3 = float(inputs.get("water_returned_m3", 0.0))
     water_consumed_m3 = freshwater_m3 + process_water_m3 - water_returned_m3
 
-    land_occupied_m2 = land_area_m2
+    # waste
+    co_product_outputs_total_kg = float(
+        inputs.get("co_product_outputs_total_kg", 0.0))
+    waste_solid_kg = max(0.0, ore_input_kg - yield_metal_t *
+                         1000.0 - co_product_outputs_total_kg)
 
-    waste_solid_kg = ore_input_kg - \
-        (yield_metal_t * 1000.0) - co_product_outputs_total_kg
-    if waste_solid_kg < 0:
-        waste_solid_kg = 0.0
-    waste_hazardous_kg = waste_solid_kg * hazardous_fraction
+    # emissions (air) simplified
+    emissions_co2 = 0.0
+    if "electricity_kWh" in inputs:
+        emissions_co2 += float(inputs.get("electricity_kWh",
+                               0.0)) * GRID_CO2_KG_PER_KWH
+    emissions_co2 += float(inputs.get("fuel_diesel_L",
+                           0.0)) * DIESEL_CO2_KG_PER_L
+    emissions_co2 += float(inputs.get("fuel_heavyOil_L",
+                           0.0)) * HEAVYOIL_CO2_KG_PER_L
+    emissions_co2 += float(inputs.get("fuel_naturalGas_MJ",
+                           0.0)) * NG_CO2_KG_PER_MJ
 
-    # Emissions - CO2
-    emissions_co2_kg = (
-        electricity_kWh * (inputs.get("grid_factor", 0.0))
-        + fuel_diesel_L * CO2_PER_L_DIESEL
-        + fuel_heavyOil_L * CO2_PER_L_HFO
-        + fuel_naturalGas_MJ * CO2_PER_MJ_NATGAS
-        + coal_kg * CO2_PER_KG_COAL
-    )
+    emissions_ch4 = float(inputs.get("fuel_diesel_L", 0.0)
+                          ) * DIESEL_CH4_KG_PER_L
+    emissions_n2o = float(inputs.get("fuel_diesel_L", 0.0)
+                          ) * DIESEL_N2O_KG_PER_L
+    emissions_nox = float(inputs.get("fuel_diesel_L", 0.0)
+                          ) * PM_PER_DIESEL_L  # placeholder
+    particulate = float(inputs.get("fuel_diesel_L", 0.0)) * PM_PER_DIESEL_L
 
-    emissions_ch4_kg = fuel_diesel_L * CH4_PER_L_DIESEL
-    emissions_n2o_kg = fuel_diesel_L * N2O_PER_L_DIESEL
-    emissions_so2_kg = coal_kg * sulfur_content * SO2_SULFUR_CONVERSION
-    emissions_nox_kg = fuel_diesel_L * NOX_FACTOR_DIESEL
-    emissions_particulates_kg = fuel_diesel_L * PM_FACTOR_DIESEL
-    heavy_metals_kg = ore_input_kg * impurity_factor
-    voc_kg = auxiliary_materials_kg * VOC_FACTOR_AUX
+    # basic LCIA metric: GWP in kg CO2e (CO2 + CH4*28 + N2O*265)
+    gwp = emissions_co2 + emissions_ch4 * 28.0 + emissions_n2o * 265.0
 
-    # Water emissions
-    emissions_water_metal_ions_kg = ore_input_kg * LEACHING_FACTOR
-    emissions_water_suspended_solids_kg = waste_solid_kg * RUNOFF_FRACTION
-    emissions_water_fluoride_kg = process_water_m3 * FLUORIDE_CONC_DEFAULT
-    emissions_water_chemicals_kg = auxiliary_materials_kg * \
-        0.01  # default small loss fraction
-
-    # Pack results
-    stage_result = {
-        "stage": "mining",
+    return {
         "yield_metal_t": yield_metal_t,
         "total_material_input_kg": total_material_input_kg,
-        "energy_total_MJ": energy_total_MJ,
-        "water_consumed_m3": water_consumed_m3,
-        "land_occupied_m2": land_occupied_m2,
+        "energy_MJ": energy_mj,
+        "water_m3": water_consumed_m3,
         "waste_solid_kg": waste_solid_kg,
-        "waste_hazardous_kg": waste_hazardous_kg,
-        "emissions_air": {
-            "co2_kg": emissions_co2_kg,
-            "ch4_kg": emissions_ch4_kg,
-            "n2o_kg": emissions_n2o_kg,
-            "so2_kg": emissions_so2_kg,
-            "nox_kg": emissions_nox_kg,
-            "particulates_kg": emissions_particulates_kg,
-            "heavy_metals_kg": heavy_metals_kg,
-            "voc_kg": voc_kg,
+        "emissions": {
+            "co2_kg": emissions_co2,
+            "ch4_kg": emissions_ch4,
+            "n2o_kg": emissions_n2o,
+            "nox_kg": emissions_nox,
+            "particulates_kg": particulate
         },
-        "emissions_water": {
-            "metal_ions_kg": emissions_water_metal_ions_kg,
-            "suspended_solids_kg": emissions_water_suspended_solids_kg,
-            "fluoride_kg": emissions_water_fluoride_kg,
-            "chemicals_kg": emissions_water_chemicals_kg,
-        },
-        "product_mass_kg": product_mass_kg,
+        "gwp_kgCO2e": gwp
     }
-    return stage_result
+
+
+def compute_extraction(inputs: Dict[str, Any]) -> Dict[str, Any]:
+    # inputs: ore_input_kg, fraction_alumina, reduction_efficiency, electricity_kWh, fuel_coal_kg, anode_carbon_kg, fuel_naturalGas_MJ, etc.
+    ore_input_kg = float(inputs.get("ore_input_kg", 0.0))
+    fraction_alumina = float(inputs.get("fraction_alumina", 0.0))
+    reduction_efficiency = float(inputs.get("reduction_efficiency", 1.0))
+
+    yield_metal_t = (ore_input_kg * fraction_alumina *
+                     reduction_efficiency) / 1000.0
+    total_material_input_kg = ore_input_kg + \
+        float(inputs.get("anode_materials", 0.0))
+    energy_mj = _sum_energy_mj_from_inputs(inputs)
+
+    # waste
+    impurity_fraction = float(inputs.get("impurity_fraction", 0.0))
+    anode_residue_kg = float(inputs.get("anode_residue_kg", 0.0))
+    waste_solid_kg = (ore_input_kg * impurity_fraction) + anode_residue_kg
+
+    # emissions
+    emissions_co2 = 0.0
+    if "electricity_kWh" in inputs:
+        emissions_co2 += float(inputs.get("electricity_kWh",
+                               0.0)) * GRID_CO2_KG_PER_KWH
+    emissions_co2 += float(inputs.get("fuel_coal_kg", 0.0)
+                           ) * COAL_CO2_KG_PER_KG
+    emissions_co2 += float(inputs.get("fuel_naturalGas_MJ",
+                           0.0)) * NG_CO2_KG_PER_MJ
+    emissions_co2 += float(inputs.get("anode_carbon_kg", 0.0)
+                           ) * ANODE_CARBON_CO2_KG_PER_KG
+
+    # PFCs simple estimate
+    cf4_kg = float(inputs.get("anode_effect_minutes", 0.0)) * \
+        float(inputs.get("CF4_factor", 0.0))
+    c2f6_kg = float(inputs.get("anode_effect_minutes", 0.0)) * \
+        float(inputs.get("C2F6_factor", 0.0))
+    pfc_co2e = cf4_kg * 7390.0 + c2f6_kg * 12200.0
+
+    # other small emissions
+    nox_kg = float(inputs.get("fuel_naturalGas_MJ", 0.0)) * NOX_PER_GAS_MJ
+    particulates_kg = float(inputs.get("fuel_coal_kg", 0.0)) * PM_PER_COAL_KG
+
+    gwp = emissions_co2 + pfc_co2e
+
+    return {
+        "yield_metal_t": yield_metal_t,
+        "total_material_input_kg": total_material_input_kg,
+        "energy_MJ": energy_mj,
+        "waste_solid_kg": waste_solid_kg,
+        "emissions": {
+            "co2_kg": emissions_co2,
+            "cf4_kg": cf4_kg,
+            "c2f6_kg": c2f6_kg,
+            "pfc_co2e_kgCO2e": pfc_co2e,
+            "nox_kg": nox_kg,
+            "particulates_kg": particulates_kg
+        },
+        "gwp_kgCO2e": gwp
+    }
+
+
+def compute_manufacturing(inputs: Dict[str, Any]) -> Dict[str, Any]:
+    # inputs: metal_input_kg, process_yield, electricity_kWh, fuel_naturalGas_MJ, lubricants_kg, etc.
+    metal_input_kg = float(inputs.get(
+        "metal_input_kg", inputs.get("metal_input", 0.0)))
+    process_yield = float(inputs.get("process_yield", 1.0))
+    yield_metal_t = (metal_input_kg * process_yield) / 1000.0
+    total_material_input_kg = metal_input_kg + \
+        float(inputs.get("lubricants_kg", 0.0))
+    energy_mj = _sum_energy_mj_from_inputs(inputs)
+
+    # water consumed
+    freshwater_m3 = float(inputs.get("freshwater_m3", 0.0))
+    process_water_m3 = float(inputs.get("process_water_m3", 0.0))
+    water_returned_m3 = float(inputs.get("cooling_water_returned", 0.0))
+    water_consumed_m3 = freshwater_m3 + process_water_m3 - water_returned_m3
+
+    # emissions
+    emissions_co2 = 0.0
+    if "electricity_kWh" in inputs:
+        emissions_co2 += float(inputs.get("electricity_kWh",
+                               0.0)) * GRID_CO2_KG_PER_KWH
+    emissions_co2 += float(inputs.get("fuel_naturalGas_MJ",
+                           0.0)) * NG_CO2_KG_PER_MJ
+
+    nox_kg = float(inputs.get("fuel_naturalGas_MJ", 0.0)) * NOX_PER_GAS_MJ
+    particulates_kg = float(inputs.get("auxiliary_materials_kg", 0.0)) * 0.001
+
+    gwp = emissions_co2
+
+    return {
+        "yield_metal_t": yield_metal_t,
+        "total_material_input_kg": total_material_input_kg,
+        "energy_MJ": energy_mj,
+        "water_m3": water_consumed_m3,
+        "waste_solid_kg": float(inputs.get("scrap_kg", 0.0)),
+        "emissions": {
+            "co2_kg": emissions_co2,
+            "nox_kg": nox_kg,
+            "particulates_kg": particulates_kg
+        },
+        "gwp_kgCO2e": gwp
+    }
+
+
+def compute_combined_lca(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    payload contains:
+      - projectId, scenarioId, route, functionalUnit_kg, recycling_rate
+      - inputs: { mining: {...}, extraction: {...}, manufacturing: {...} }
+    Returns breakdown & totals.
+    """
+    inputs = payload.get("inputs", {})
+    mining_inputs = inputs.get("mining", {})
+    extraction_inputs = inputs.get("extraction", {})
+    manufacturing_inputs = inputs.get("manufacturing", {})
+
+    mining_res = compute_mining(mining_inputs) if mining_inputs else {}
+    extraction_res = compute_extraction(
+        extraction_inputs) if extraction_inputs else {}
+    manufacturing_res = compute_manufacturing(
+        manufacturing_inputs) if manufacturing_inputs else {}
+
+    # totals (sum numeric fields)
+    total_gwp = 0.0
+    total_energy = 0.0
+    total_water = 0.0
+
+    for res in (mining_res, extraction_res, manufacturing_res):
+        if not res:
+            continue
+        total_gwp += float(res.get("gwp_kgCO2e", 0.0) or 0.0)
+        total_energy += float(res.get("energy_MJ", 0.0) or 0.0)
+        total_water += float(res.get("water_m3", 0.0) or 0.0)
+
+    # circularity: avoided primary burden (very simplified)
+    recycling_rate = float(payload.get("recycling_rate", 0.0))
+    # If user provided primary route GWP we could compute avoided; for now use manufacturing_gwp * recycling_rate
+    primary_route_gwp = float(payload.get(
+        "primary_route_gwp_kgCO2e", total_gwp))
+    avoided = recycling_rate * primary_route_gwp
+
+    return {
+        "metadata": {
+            "projectId": payload.get("projectId"),
+            "scenarioId": payload.get("scenarioId"),
+            "route": payload.get("route")
+        },
+        "functionalUnit_kg": float(payload.get("functionalUnit_kg", 1.0)),
+        "breakdown": {
+            "mining": mining_res,
+            "extraction": extraction_res,
+            "manufacturing": manufacturing_res
+        },
+        "totals": {
+            "gwp_kgCO2e": total_gwp,
+            "energy_MJ": total_energy,
+            "water_m3": total_water
+        },
+        "circularity": {
+            "recycling_rate": recycling_rate,
+            "avoided_primary_co2e_kg": avoided
+        }
+    }
