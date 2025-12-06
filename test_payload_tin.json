@@ -1,0 +1,34 @@
+{
+    "projectId": "test-p1",
+    "scenarioId": "test-s1",
+    "metal": "tin",
+    "route": "sn_primary_global",
+    "functionalUnit_kg": 1000,
+    "recycling_rate": 0.0,
+    "inputs": {
+        "mining": {
+            "ore_input_kg": 2000,
+            "ore_grade_percent": 1.0,
+            "process_recovery": 0.85,
+            "electricity_kWh": 200,
+            "fuel_diesel_L": 50,
+            "freshwater_m3": 0,
+            "process_water_m3": 10,
+            "auxiliary_materials_kg": 20
+        },
+        "extraction": {
+            "ore_input_kg": 1800,
+            "reduction_efficiency": 0.95,
+            "electricity_kWh": 1000,
+            "fuel_coal_kg": 100,
+            "fuel_naturalGas_MJ": 200,
+            "leaching_factor_metal": 0.0002
+        },
+        "manufacturing": {
+            "metal_input_kg": 1000,
+            "process_yield": 0.98,
+            "electricity_kWh": 150,
+            "fuel_naturalGas_MJ": 100
+        }
+    }
+}

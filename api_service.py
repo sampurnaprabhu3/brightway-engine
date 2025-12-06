@@ -7,18 +7,11 @@ import traceback
 import uvicorn
 import logging
 
-# calculators (aluminium, copper already present)
+# calculators (existing)
 from aluminium_calculators import compute_combined_lca as compute_combined_lca_aluminium
 from copper_calculators import compute_combined_lca_copper
-
-# steel calculator (new)
-# NOTE: keep this import optional-safe in case dev wants to run without steel module
-try:
-    from steel_calculators import compute_combined_lca_steel
-    _STEEL_AVAILABLE = True
-except Exception:
-    compute_combined_lca_steel = None
-    _STEEL_AVAILABLE = False
+# new: tin
+from tin_calculators import compute_combined_lca_tin
 
 logger = logging.getLogger("metal-lca-engine")
 logging.basicConfig(level=logging.INFO)
@@ -105,14 +98,15 @@ class CopperRequest(BaseModel):
     inputs: Optional[StageInputs] = None
 
 
-# -----------------------
-# Helpers
-# -----------------------
-def _validate_json_payload(payload: Any) -> Dict[str, Any]:
-    if not isinstance(payload, dict):
-        raise HTTPException(
-            status_code=400, detail="Payload must be a JSON object")
-    return payload
+class TinRequest(BaseModel):
+    projectId: str
+    scenarioId: str
+    metal: str
+    route: Optional[str] = None
+    stage: Optional[str] = None
+    functionalUnit_kg: Optional[float] = 1000.0
+    recycling_rate: Optional[float] = 0.0
+    inputs: Optional[StageInputs] = None
 
 
 # -----------------------
@@ -131,7 +125,10 @@ async def run_aluminium(request: Request) -> JSONResponse:
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid JSON body: {e}")
 
-    _validate_json_payload(payload)
+    if not isinstance(payload, dict):
+        raise HTTPException(
+            status_code=400, detail="Payload must be a JSON object")
+
     try:
         logger.info("Dispatching LCA for metal=aluminium")
         result = compute_combined_lca_aluminium(payload)
@@ -149,7 +146,10 @@ async def run_copper(request: Request) -> JSONResponse:
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid JSON body: {e}")
 
-    _validate_json_payload(payload)
+    if not isinstance(payload, dict):
+        raise HTTPException(
+            status_code=400, detail="Payload must be a JSON object")
+
     try:
         logger.info("Dispatching LCA for metal=copper")
         result = compute_combined_lca_copper(payload)
@@ -160,32 +160,48 @@ async def run_copper(request: Request) -> JSONResponse:
             status_code=500, detail=f"Server error running copper LCA: {e}")
 
 
-# NEW: steel endpoint
-@app.post("/steel/run")
-async def run_steel(request: Request) -> JSONResponse:
-    if not _STEEL_AVAILABLE:
-        raise HTTPException(
-            status_code=500, detail="Steel calculator module not available on server")
-
+@app.post("/tin/run")
+async def run_tin(request: Request) -> JSONResponse:
+    """
+    New tin endpoint. Accepts the same combined payload shape as aluminium/copper.
+    Delegates to tin_calculators.compute_combined_lca_tin(payload).
+    """
     try:
         payload: Dict[str, Any] = await request.json()
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid JSON body: {e}")
 
-    _validate_json_payload(payload)
+    if not isinstance(payload, dict):
+        raise HTTPException(
+            status_code=400, detail="Payload must be a JSON object")
+
     try:
-        logger.info("Dispatching LCA for metal=steel")
-        result = compute_combined_lca_steel(payload)
+        logger.info("Dispatching LCA for metal=tin")
+        result = compute_combined_lca_tin(payload)
         return JSONResponse(status_code=200, content=result)
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(
-            status_code=500, detail=f"Server error running steel LCA: {e}")
+            status_code=500, detail=f"Server error running tin LCA: {e}")
+
+
+# Optional: generic dispatch endpoint (uncomment if you prefer single /metal/run)
+# @app.post("/metal/run")
+# async def run_metal(request: Request) -> JSONResponse:
+#     payload = await request.json()
+#     metal = payload.get("metal", "").lower()
+#     if metal == "aluminium":
+#         return JSONResponse(status_code=200, content=compute_combined_lca_aluminium(payload))
+#     elif metal == "copper":
+#         return JSONResponse(status_code=200, content=compute_combined_lca_copper(payload))
+#     elif metal == "tin":
+#         return JSONResponse(status_code=200, content=compute_combined_lca_tin(payload))
+#     else:
+#         raise HTTPException(status_code=400, detail=f"Unsupported metal: {metal}")
 
 
 # -----------------------
 # Run server for local debug (if you run python api_service.py)
 # -----------------------
 if __name__ == "__main__":
-    # default bind for development
     uvicorn.run("api_service:app", host="0.0.0.0", port=8000, reload=True)
