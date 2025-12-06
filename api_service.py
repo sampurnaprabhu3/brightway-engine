@@ -1,5 +1,5 @@
 # api_service.py
-from typing import Dict, Any, Optional, Callable
+from typing import Dict, Any, Optional
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -7,19 +7,28 @@ import traceback
 import uvicorn
 import logging
 
-# Import calculators - ensure these names exist in the respective modules
+# calculators (aluminium, copper already present)
 from aluminium_calculators import compute_combined_lca as compute_combined_lca_aluminium
 from copper_calculators import compute_combined_lca_copper
 
-# Configure a simple logger (uvicorn logs are also produced)
-logging.basicConfig(level=logging.INFO)
+# steel calculator (new)
+# NOTE: keep this import optional-safe in case dev wants to run without steel module
+try:
+    from steel_calculators import compute_combined_lca_steel
+    _STEEL_AVAILABLE = True
+except Exception:
+    compute_combined_lca_steel = None
+    _STEEL_AVAILABLE = False
+
 logger = logging.getLogger("metal-lca-engine")
+logging.basicConfig(level=logging.INFO)
 
 app = FastAPI(title="Metal LCA Engine", version="0.2.0")
 
 
 # -----------------------
 # Pydantic request models
+# (keeps fields optional to accept partial/combined stage payloads)
 # -----------------------
 
 class MiningInputs(BaseModel):
@@ -72,7 +81,7 @@ class StageInputs(BaseModel):
     manufacturing: Optional[ManufacturingInputs] = None
 
 
-class GenericRequest(BaseModel):
+class AluminiumRequest(BaseModel):
     projectId: str
     scenarioId: str
     metal: str
@@ -80,35 +89,34 @@ class GenericRequest(BaseModel):
     stage: Optional[str] = None
     functionalUnit_kg: Optional[float] = 1.0
     recycling_rate: Optional[float] = 0.0
+    primary_cost_per_kg: Optional[float] = None
+    recycled_cost_per_kg: Optional[float] = None
+    inputs: Optional[StageInputs] = None
+
+
+class CopperRequest(BaseModel):
+    projectId: str
+    scenarioId: str
+    metal: str
+    route: Optional[str] = None
+    stage: Optional[str] = None
+    functionalUnit_kg: Optional[float] = 1000.0
+    recycling_rate: Optional[float] = 0.0
     inputs: Optional[StageInputs] = None
 
 
 # -----------------------
-# Helper: dispatch table
+# Helpers
 # -----------------------
-# Map canonical metal string -> (callable, description)
-CALCULATOR_MAP: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
-    "aluminium": compute_combined_lca_aluminium,
-    "aluminum": compute_combined_lca_aluminium,  # alternate spelling
-    "copper": compute_combined_lca_copper,
-    # add more metals here: "iron": compute_combined_lca_iron, ...
-}
-
-
-def _dispatch_to_calculator(metal: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Call the appropriate calculator based on metal string (case-insensitive)."""
-    if not isinstance(metal, str) or not metal:
-        raise ValueError("metal must be a non-empty string")
-    key = metal.strip().lower()
-    func = CALCULATOR_MAP.get(key)
-    if func is None:
-        raise KeyError(f"Unsupported metal '{metal}'")
-    # call calculator - calculators should accept raw dict payload
-    return func(payload)
+def _validate_json_payload(payload: Any) -> Dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise HTTPException(
+            status_code=400, detail="Payload must be a JSON object")
+    return payload
 
 
 # -----------------------
-# Endpoints (existing / compatibility)
+# Endpoints
 # -----------------------
 
 @app.get("/")
@@ -116,88 +124,68 @@ async def root():
     return {"message": "Metal LCA Engine running", "version": app.version}
 
 
-@app.post("/metal/run")
-async def run_metal(request: Request) -> JSONResponse:
-    """
-    Generic endpoint that dispatches to the correct metal calculator based on payload['metal'].
-    Accepts the same combined payload format used previously.
-    """
-    try:
-        payload: Dict[str, Any] = await request.json()
-    except Exception as e:
-        logger.exception("Invalid JSON payload")
-        raise HTTPException(status_code=400, detail=f"Invalid JSON body: {e}")
-
-    if not isinstance(payload, dict):
-        raise HTTPException(
-            status_code=400, detail="Payload must be a JSON object")
-
-    metal = (payload.get("metal") or "").strip()
-    if not metal:
-        raise HTTPException(
-            status_code=400, detail="Missing 'metal' in payload")
-
-    try:
-        logger.info("Dispatching LCA for metal=%s", metal)
-        result = _dispatch_to_calculator(metal, payload)
-        return JSONResponse(status_code=200, content=result)
-    except KeyError as ke:
-        raise HTTPException(status_code=400, detail=str(ke))
-    except Exception as e:
-        logger.exception("Error running LCA for metal=%s", metal)
-        raise HTTPException(
-            status_code=500, detail=f"Server error running {metal} LCA: {e}")
-
-
 @app.post("/aluminium/run")
 async def run_aluminium(request: Request) -> JSONResponse:
-    """Backwards-compatible aluminium endpoint - calls aluminium calculator directly."""
     try:
         payload: Dict[str, Any] = await request.json()
     except Exception as e:
-        logger.exception("Invalid JSON payload for aluminium")
         raise HTTPException(status_code=400, detail=f"Invalid JSON body: {e}")
 
-    if not isinstance(payload, dict):
-        raise HTTPException(
-            status_code=400, detail="Payload must be a JSON object")
-
+    _validate_json_payload(payload)
     try:
-        logger.info("Running aluminium LCA (compat endpoint)")
+        logger.info("Dispatching LCA for metal=aluminium")
         result = compute_combined_lca_aluminium(payload)
         return JSONResponse(status_code=200, content=result)
     except Exception as e:
-        logger.exception("Server error running aluminium LCA")
+        traceback.print_exc()
         raise HTTPException(
             status_code=500, detail=f"Server error running aluminium LCA: {e}")
 
 
 @app.post("/copper/run")
 async def run_copper(request: Request) -> JSONResponse:
-    """Backwards-compatible copper endpoint - calls copper calculator directly."""
     try:
         payload: Dict[str, Any] = await request.json()
     except Exception as e:
-        logger.exception("Invalid JSON payload for copper")
         raise HTTPException(status_code=400, detail=f"Invalid JSON body: {e}")
 
-    if not isinstance(payload, dict):
-        raise HTTPException(
-            status_code=400, detail="Payload must be a JSON object")
-
+    _validate_json_payload(payload)
     try:
-        logger.info("Running copper LCA (compat endpoint)")
+        logger.info("Dispatching LCA for metal=copper")
         result = compute_combined_lca_copper(payload)
         return JSONResponse(status_code=200, content=result)
     except Exception as e:
-        logger.exception("Server error running copper LCA")
+        traceback.print_exc()
         raise HTTPException(
             status_code=500, detail=f"Server error running copper LCA: {e}")
 
 
+# NEW: steel endpoint
+@app.post("/steel/run")
+async def run_steel(request: Request) -> JSONResponse:
+    if not _STEEL_AVAILABLE:
+        raise HTTPException(
+            status_code=500, detail="Steel calculator module not available on server")
+
+    try:
+        payload: Dict[str, Any] = await request.json()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON body: {e}")
+
+    _validate_json_payload(payload)
+    try:
+        logger.info("Dispatching LCA for metal=steel")
+        result = compute_combined_lca_steel(payload)
+        return JSONResponse(status_code=200, content=result)
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500, detail=f"Server error running steel LCA: {e}")
+
+
 # -----------------------
-# Run server for local debug
+# Run server for local debug (if you run python api_service.py)
 # -----------------------
 if __name__ == "__main__":
-    # For local dev you can run `python api_service.py` to start
+    # default bind for development
     uvicorn.run("api_service:app", host="0.0.0.0", port=8000, reload=True)

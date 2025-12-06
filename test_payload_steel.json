@@ -1,0 +1,37 @@
+{
+    "projectId": "test-steel-1",
+    "scenarioId": "s1",
+    "metal": "steel",
+    "route": "steel_primary_bf_bof_india",
+    "functionalUnit_kg": 1000,
+    "recycling_rate": 0.0,
+    "inputs": {
+        "mining": {
+            "ore_input_kg": 200000,
+            "ore_grade_percent": 30,
+            "process_recovery": 0.95,
+            "electricity_kWh": 5000,
+            "fuel_diesel_L": 1000,
+            "freshwater_m3": 50,
+            "process_water_m3": 100,
+            "land_area_m2": 10000,
+            "auxiliary_materials_kg": 10000
+        },
+        "extraction": {
+            "ore_input_kg": 150000,
+            "reduction_efficiency": 0.95,
+            "electricity_kWh": 10000,
+            "fuel_coal_kg": 20000,
+            "fuel_naturalGas_MJ": 5000,
+            "auxiliary_materials_kg": 20000,
+            "slag_factor": 0.25
+        },
+        "manufacturing": {
+            "metal_input_kg": 1000,
+            "process_yield": 0.98,
+            "electricity_kWh": 2000,
+            "fuel_naturalGas_MJ": 800,
+            "auxiliary_materials_kg": 200
+        }
+    }
+}
