@@ -1,0 +1,36 @@
+{
+    "projectId": "test-p1",
+    "scenarioId": "test-s1",
+    "metal": "lithium",
+    "route": "li_primary_spodumene_global",
+    "functionalUnit_kg": 1000,
+    "inputs": {
+        "mining": {
+            "ore_input_kg": 50000,
+            "ore_grade_percent": 0.8,
+            "electricity_kWh": 500,
+            "fuel_diesel_L": 200,
+            "freshwater_m3": 20,
+            "process_water_m3": 50,
+            "land_area_m2": 1000,
+            "auxiliary_materials_kg": 100
+        },
+        "extraction": {
+            "ore_input_kg": 20000,
+            "electricity_kWh": 1500,
+            "fuel_naturalGas_MJ": 5000,
+            "fuel_coal_kg": 100,
+            "freshwater_m3": 10,
+            "process_water_m3": 15,
+            "auxiliary_materials_kg": 50
+        },
+        "manufacturing": {
+            "ore_input_kg": 1500,
+            "electricity_kWh": 800,
+            "fuel_naturalGas_MJ": 800,
+            "freshwater_m3": 5,
+            "process_water_m3": 10,
+            "auxiliary_materials_kg": 20
+        }
+    }
+}
