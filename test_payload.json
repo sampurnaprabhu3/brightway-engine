@@ -1,0 +1,31 @@
+{
+  "projectId": "p1",
+  "scenarioId": "s1",
+  "metal": "aluminium",
+  "route": "primary_global",
+  "recycling_rate": 0.2,
+  "functionalUnit_kg": 1.0,
+  "inputs": {
+    "mining": {
+      "ore_input_kg": 2000,
+      "ore_grade_percent": 1.2,
+      "process_recovery": 0.85,
+      "electricity_kWh": 500,
+      "fuel_diesel_L": 100
+    },
+    "extraction": {
+      "ore_input_kg": 1500,
+      "fraction_alumina": 0.35,
+      "reduction_efficiency": 0.9,
+      "electricity_kWh": 300,
+      "fuel_coal_kg": 200,
+      "anode_carbon_kg": 50
+    },
+    "manufacturing": {
+      "metal_input_kg": 1000,
+      "process_yield": 0.98,
+      "electricity_kWh": 200,
+      "fuel_naturalGas_MJ": 800
+    }
+  }
+}

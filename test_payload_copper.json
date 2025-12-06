@@ -1,0 +1,45 @@
+{
+  "projectId": "test-p1",
+  "scenarioId": "test-s1",
+  "metal": "copper",
+  "route": "cu_primary_global",
+  "functionalUnit_kg": 1000,
+  "recycling_rate": 0.0,
+  "inputs": {
+    "mining": {
+      "ore_input_kg": 20000,
+      "ore_grade_percent": 1.5,
+      "process_recovery": 0.9,
+      "electricity_kWh": 400,
+      "fuel_diesel_L": 300,
+      "fuel_naturalGas_MJ": 0,
+      "freshwater_m3": 20,
+      "process_water_m3": 50,
+      "land_area_m2": 10000,
+      "auxiliary_materials_kg": 200,
+      "S_content": 0.25,
+      "acid_recovery_factor": 0.85
+    },
+    "extraction": {
+      "ore_input_kg": 15000,
+      "fraction_metal": 0.02,
+      "reduction_efficiency": 0.95,
+      "electricity_kWh": 2000,
+      "fuel_coal_kg": 150,
+      "fuel_naturalGas_MJ": 100,
+      "auxiliary_materials_kg": 100,
+      "S_content": 0.28,
+      "acid_recovery_factor": 0.80,
+      "CO2_proc_smelting": 400
+    },
+    "manufacturing": {
+      "metal_input_kg": 1000,
+      "process_yield": 0.98,
+      "electricity_kWh": 300,
+      "fuel_naturalGas_MJ": 500,
+      "auxiliary_materials_kg": 50,
+      "freshwater_m3": 5,
+      "process_water_m3": 10
+    }
+  }
+}
